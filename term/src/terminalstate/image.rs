@@ -41,6 +41,12 @@ pub struct ImageAttachParams {
     pub columns: Option<usize>,
     pub rows: Option<usize>,
 
+    /// Subrectangle of cells to be attached. If None, then attach the entire image.
+    pub subrect_start_column: Option<usize>,
+    pub subrect_start_row: Option<usize>,
+    pub subrect_width: Option<usize>,
+    pub subrect_height: Option<usize>,
+
     pub image_id: Option<u32>,
     pub placement_id: Option<u32>,
 
@@ -85,10 +91,13 @@ impl TerminalState {
             .rows
             .unwrap_or_else(|| (source_height as f32 / cell_pixel_height as f32).ceil() as usize);
 
+        let target_aspect = width_in_cells as f32 * cell_pixel_width as f32
+            / (height_in_cells as f32 * cell_pixel_height as f32);
+
         // Figure out the desired pixel dimensions, respecting the original
         // aspect of the picture if they specific rows/columns as the max size.
         let target_pixel_width = if params.columns.is_some() {
-            if source_width > source_height {
+            if aspect > target_aspect {
                 width_in_cells * cell_pixel_width
             } else {
                 ((height_in_cells * cell_pixel_height) as f32 * aspect).ceil() as usize
@@ -97,7 +106,7 @@ impl TerminalState {
             source_width as usize
         };
         let target_pixel_height = if params.rows.is_some() {
-            if source_height > source_width {
+            if aspect < target_aspect {
                 height_in_cells * cell_pixel_height
             } else {
                 ((width_in_cells * cell_pixel_width) as f32 / aspect).ceil() as usize
@@ -129,13 +138,34 @@ impl TerminalState {
             self.pixel_height
         );
 
+        let start_row = params.subrect_start_row.unwrap_or(0);
+        let start_column = params.subrect_start_column.unwrap_or(0);
+        let width_in_cells = width_in_cells.saturating_sub(start_column);
+        let height_in_cells = height_in_cells.saturating_sub(start_row);
+
         let height_in_cells = if params.do_not_move_cursor {
             height_in_cells.min(self.screen().physical_rows - self.cursor.y as usize)
         } else {
             height_in_cells
         };
 
-        let mut remain_y = target_pixel_height as usize;
+        let subrect_width = params.subrect_width.unwrap_or(width_in_cells);
+        let subrect_height = params.subrect_height.unwrap_or(height_in_cells);
+
+        let width_in_cells = width_in_cells.min(subrect_width);
+        let height_in_cells = height_in_cells.min(subrect_height);
+
+        if width_in_cells <= 0 || height_in_cells <= 0 {
+            return Err(anyhow::anyhow!(
+                "empty image placement",
+            ));
+        }
+
+        let start_xpos = start_xpos +
+            (cell_pixel_width as f32 / target_pixel_width as f32) * start_column as f32;
+        ypos = ypos + (cell_pixel_height as f32 / target_pixel_height as f32) * start_row as f32;
+
+        let mut remain_y = (target_pixel_height as usize).saturating_sub(start_row * cell_pixel_height);
         for y in 0..height_in_cells {
             let padding_bottom = cell_pixel_height.saturating_sub(remain_y) as u16;
             let y_delta = (remain_y.min(cell_pixel_height) as f32) / (target_pixel_height as f32);
@@ -153,7 +183,8 @@ impl TerminalState {
                 cursor_x,
                 cursor_x + width_in_cells
             );
-            let mut remain_x = target_pixel_width as usize;
+            let mut remain_x =
+                (target_pixel_width as usize).saturating_sub(start_column * cell_pixel_width);
             for x in 0..width_in_cells {
                 let padding_right = cell_pixel_width.saturating_sub(remain_x) as u16;
                 let x_delta = (remain_x.min(cell_pixel_width) as f32) / (target_pixel_width as f32);
@@ -183,6 +214,8 @@ impl TerminalState {
                     padding_bottom,
                     params.image_id,
                     params.placement_id,
+                    Some((start_column + x) as u16),
+                    Some((start_row + y) as u16),
                 ));
                 match params.style {
                     ImageAttachStyle::Kitty => cell.attrs_mut().attach_image(img),

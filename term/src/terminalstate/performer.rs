@@ -2,6 +2,7 @@ use crate::terminal::Alert;
 use crate::terminalstate::{
     default_color_map, CharSet, MouseEncoding, TabStop, UnicodeVersionStackEntry,
 };
+use crate::terminalstate::rowcolumn_diacritics_helpers::diacritic_to_num;
 use crate::{ClipboardSelection, Position, TerminalState, VisibleRowIndex, DCS, ST};
 use log::{debug, error};
 use num_traits::FromPrimitive;
@@ -9,6 +10,7 @@ use ordered_float::NotNan;
 use std::fmt::Write;
 use std::ops::{Deref, DerefMut};
 use termwiz::cell::{grapheme_column_width, Cell, CellAttributes, SemanticType};
+use termwiz::color::{ColorAttribute, SrgbaTuple};
 use termwiz::escape::csi::{
     CharacterPath, EraseInDisplay, Keyboard, KittyKeyboardFlags, KittyKeyboardMode,
 };
@@ -117,6 +119,29 @@ impl<'a> Performer<'a> {
         let seqno = self.seqno;
         let mut p = std::mem::take(&mut self.print);
 
+        // Keep track of the last column and row for unicode image placeholders. These are 1-based.
+        let mut last_col = 0;
+        let mut last_row = 1;
+        // Try to initialize them from the previous cell if it contains an image.
+        {
+            let x = self.cursor.x;
+            let y = self.cursor.y;
+            let screen = self.screen_mut();
+            if let Some(cell) = screen.get_cell(x - 1, y) {
+                if let Some(imgs) = cell.attrs().images() {
+                    for img in imgs {
+                        if let Some(col) = img.col() {
+                            if let Some(row) = img.row() {
+                                last_col = col as u32 + 1;
+                                last_row = row as u32 + 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         for g in unicode_segmentation::UnicodeSegmentation::graphemes(p.as_str(), true) {
             let g = self.remap_grapheme(g);
 
@@ -160,18 +185,65 @@ impl<'a> Performer<'a> {
                 }
             }
 
-            // Assign the cell
-            log::trace!(
-                "print x={} y={} print_width={} width={} cell={} {:?}",
-                x,
-                y,
-                print_width,
-                width,
-                g,
-                self.pen
-            );
-            self.screen_mut()
-                .set_cell_grapheme(x, y, g, print_width, pen, seqno);
+            // A helper to extract image ID from a color.
+            fn srgba_to_id(srgba: SrgbaTuple) -> u32 {
+                let r = (srgba.0 * 255.0) as u32;
+                let g = (srgba.1 * 255.0) as u32;
+                let b = (srgba.2 * 255.0) as u32;
+                (r << 16) | (g << 8) | b
+            }
+
+            // If g starts with a placeholder symbol
+            if g.starts_with('\u{eeee}') {
+                // Get 1-based column and row from diacritics.
+                let row = g.chars().nth(1).map_or(0, diacritic_to_num);
+                let col = g.chars().nth(2).map_or(0, diacritic_to_num);
+                // If the row is not specified, use the last row.
+                let row = if row == 0 { last_row } else { row };
+                // If the row is not the same as the last row, the last column must be reset.
+                if row != last_row {
+                    last_col = 0;
+                }
+                // If the column is not specified, use the last column + 1.
+                let col = if col == 0 { last_col + 1 } else { col };
+                last_row = row;
+                last_col = col;
+                log::trace!(
+                    "image placeholder x={} y={} row={} col={}",
+                    x,
+                    y,
+                    row,
+                    col
+                    );
+                // Read the image ID from the foreground color.
+                let image_id = match pen.foreground() {
+                    ColorAttribute::PaletteIndex(idx) => idx as u32,
+                    ColorAttribute::TrueColorWithDefaultFallback(srgba) =>
+                        srgba_to_id(srgba),
+                    ColorAttribute::TrueColorWithPaletteFallback(srgba, _) =>
+                        srgba_to_id(srgba),
+                    _ => 0,
+                };
+                // Set the printed symbol to be ' '.
+                self.screen_mut()
+                    .set_cell_grapheme(x, y, " ", print_width, pen, seqno);
+                // Set the image to the cell under the cursor.
+                self.state.kitty_img_for_placeholder(image_id, col as usize - 1, row as usize - 1)
+                    .unwrap_or(());
+            } else {
+                // Assign the cell
+                log::trace!(
+                    "print x={} y={} print_width={} width={} cell={} {:?}",
+                    x,
+                    y,
+                    print_width,
+                    width,
+                    g,
+                    self.pen
+                    );
+                self.screen_mut()
+                    .set_cell_grapheme(x, y, g, print_width, pen, seqno);
+            }
 
             if !wrappable {
                 self.cursor.x += print_width;

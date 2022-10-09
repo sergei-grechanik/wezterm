@@ -128,6 +128,10 @@ impl TerminalState {
             image_id: None,
             placement_id: None,
             do_not_move_cursor: image.do_not_move_cursor,
+            subrect_start_column: None,
+            subrect_start_row: None,
+            subrect_width: None,
+            subrect_height: None,
         }) {
             log::error!("set iterm2 image: {:#}", err);
         }

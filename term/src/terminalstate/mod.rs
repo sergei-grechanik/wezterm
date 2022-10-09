@@ -29,6 +29,7 @@ mod keyboard;
 mod kitty;
 mod mouse;
 pub(crate) mod performer;
+mod rowcolumn_diacritics_helpers;
 mod sixel;
 use crate::terminalstate::image::*;
 use crate::terminalstate::kitty::*;

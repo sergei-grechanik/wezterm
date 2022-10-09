@@ -593,6 +593,9 @@ pub struct KittyImagePlacement {
     pub placement_id: Option<u32>,
     /// z=...
     pub z_index: Option<i32>,
+    /// Whether it's a virtual placement used for Unicode placeholders.
+    /// U=0, U=1
+    pub unicode_placeholder: bool,
 }
 
 impl KittyImagePlacement {
@@ -613,6 +616,11 @@ impl KittyImagePlacement {
                 _ => return None,
             },
             z_index: geti(keys, "z"),
+            unicode_placeholder: match get(keys, "U") {
+                None | Some("0") => false,
+                Some("1") => true,
+                _ => return None,
+            },
         })
     }
 
@@ -629,6 +637,10 @@ impl KittyImagePlacement {
 
         if self.do_not_move_cursor {
             keys.insert("C", "1".to_string());
+        }
+
+        if self.unicode_placeholder {
+            keys.insert("U", "1".to_string());
         }
 
         set(keys, "z", &self.z_index);
@@ -1057,19 +1069,19 @@ impl KittyImage {
             keys.insert(k, v);
         }
 
-        let payload = keys_payload_iter.next();
+        let payload = keys_payload_iter.next().unwrap_or(&[]);
         let action = get(&keys, "a").unwrap_or("t");
         let verbosity = KittyImageVerbosity::from_keys(&keys)?;
         match action {
             "t" => Some(Self::TransmitData {
-                transmit: KittyImageTransmit::from_keys(&keys, payload?)?,
+                transmit: KittyImageTransmit::from_keys(&keys, payload)?,
                 verbosity,
             }),
             "q" => Some(Self::Query {
-                transmit: KittyImageTransmit::from_keys(&keys, payload?)?,
+                transmit: KittyImageTransmit::from_keys(&keys, payload)?,
             }),
             "T" => Some(Self::TransmitDataAndDisplay {
-                transmit: KittyImageTransmit::from_keys(&keys, payload?)?,
+                transmit: KittyImageTransmit::from_keys(&keys, payload)?,
                 placement: KittyImagePlacement::from_keys(&keys)?,
                 verbosity,
             }),
@@ -1084,7 +1096,7 @@ impl KittyImage {
                 verbosity,
             }),
             "f" => Some(Self::TransmitFrame {
-                transmit: KittyImageTransmit::from_keys(&keys, payload?)?,
+                transmit: KittyImageTransmit::from_keys(&keys, payload)?,
                 frame: KittyImageFrame::from_keys(&keys)?,
                 verbosity,
             }),

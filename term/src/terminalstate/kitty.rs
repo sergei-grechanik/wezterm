@@ -23,6 +23,7 @@ pub struct KittyImageState {
     number_to_id: HashMap<u32, u32>,
     id_to_data: HashMap<u32, Arc<ImageData>>,
     placements: HashMap<(u32, Option<u32>), PlacementInfo>,
+    virtual_placements: HashMap<(u32, Option<u32>), KittyImagePlacement>,
     used_memory: usize,
 }
 
@@ -44,16 +45,27 @@ impl KittyImageState {
         let budget = 320 * 1024 * 1024; // FIXME: make this configurable
         if self.used_memory > budget {
             let referenced: HashSet<u32> = self.placements.keys().map(|(k, _)| *k).collect();
+
+            // Collect unreferenced images and sort them by access time.
+            let mut candidates: Vec<(u32, Arc<ImageData>)> = self
+                .id_to_data
+                .iter()
+                .filter(|(id, _)| !referenced.contains(id))
+                .map(|(id, data)| (*id, data.clone()))
+                .collect();
+            candidates.sort_by_key(|(_, data)| data.atime());
+
             let target = self.used_memory - budget;
             let mut freed = 0;
-            self.id_to_data.retain(|id, data| {
-                if referenced.contains(id) || freed > target {
-                    true
-                } else {
-                    freed += data.len();
-                    false
+
+            // Remove the oldest images until we have freed enough memory.
+            for (id, data) in candidates {
+                if freed >= target {
+                    break;
                 }
-            });
+                self.id_to_data.remove(&id);
+                freed += data.len();
+            }
 
             log::info!(
                 "using {} RAM for images, pruned {}",
@@ -89,6 +101,14 @@ impl TerminalState {
                     )
                 })?,
         };
+
+        if placement.unicode_placeholder {
+            self.kitty_img.virtual_placements.insert(
+                (image_id, placement.placement_id), placement.clone());
+            self.kitty_img.virtual_placements.insert(
+                (image_id, None), placement.clone());
+            return Ok(());
+        }
 
         log::trace!(
             "kitty_img_place image_id {:?} image_no {:?} placement {:?} verb {:?}",
@@ -132,6 +152,10 @@ impl TerminalState {
             image_id: Some(image_id),
             placement_id: placement.placement_id,
             do_not_move_cursor: placement.do_not_move_cursor,
+            subrect_start_column: None,
+            subrect_start_row: None,
+            subrect_width: None,
+            subrect_height: None,
         })?;
 
         self.kitty_img
@@ -143,6 +167,61 @@ impl TerminalState {
             image_number,
             placement.placement_id
         );
+
+        Ok(())
+    }
+
+    pub(crate) fn kitty_img_for_placeholder(
+        &mut self,
+        image_id: u32,
+        col: usize,
+        row: usize
+    ) -> anyhow::Result<()> {
+        let img = Arc::clone(self.kitty_img.id_to_data.get(&image_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no matching image id {} in id_to_data",
+                image_id
+            )
+        })?);
+
+        let (image_width, image_height) = match &*img.data() {
+            ImageDataType::EncodedFile(data) => {
+                let decoded = ::image::load_from_memory(data).context("decode png")?;
+                decoded.dimensions()
+            }
+            ImageDataType::AnimRgba8 { width, height, .. }
+            | ImageDataType::Rgba8 { width, height, .. } => (*width, *height),
+        };
+
+        let placement = self.kitty_img.virtual_placements.get(&(image_id, None)).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no matching virtual placement for image_id {}",
+                image_id
+            )
+        })?;
+
+        self.assign_image_to_cells(ImageAttachParams {
+            image_width,
+            image_height,
+            source_width: image_width,
+            source_height: image_height,
+            source_origin_x: 0,
+            source_origin_y: 0,
+            padding_left: 0,
+            padding_top: 0,
+            data: img,
+            style: ImageAttachStyle::Kitty,
+            z_index: 0,
+            columns: placement.columns.map(|x| x as usize),
+            rows: placement.rows.map(|x| x as usize),
+            image_id: None,
+            placement_id: None,
+            do_not_move_cursor: true,
+            subrect_start_column: Some(col),
+            subrect_start_row: Some(row),
+            subrect_width: Some(1),
+            subrect_height: Some(1),
+        })?;
 
         Ok(())
     }
@@ -239,6 +318,13 @@ impl TerminalState {
                 verbosity,
             } => {
                 self.kitty_img_place(image_id, image_number, placement, verbosity)?;
+                self.kitty_send_response(
+                    verbosity,
+                    true,
+                    image_id,
+                    image_number,
+                    "OK".to_string(),
+                );
             }
             KittyImage::Delete {
                 what:
@@ -833,15 +919,13 @@ impl TerminalState {
         let img = self.raw_image_to_image_data(img);
         self.kitty_img.record_id_to_data(image_id, img);
 
-        if image_number.is_some() {
-            self.kitty_send_response(
-                verbosity,
-                true,
-                Some(image_id),
-                image_number,
-                "OK".to_string(),
-            );
-        }
+        self.kitty_send_response(
+            verbosity,
+            true,
+            Some(image_id),
+            image_number,
+            "OK".to_string(),
+        );
 
         Ok(image_id)
     }
