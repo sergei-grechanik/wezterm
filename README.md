@@ -1,3 +1,15 @@
+# Image placement using Unicode placeholders
+
+This fork of wezterm implements an extension to the kitty graphics protocol that
+allows placing images using a special Unicode symbol as a placeholder. This
+approach should work with tmux, vim and similar applications without them
+knowing anything about the kitty graphics protocol.
+
+To upload and display images using Unicode placeholders there is a script called
+`tupimage` that you can find
+[here](https://github.com/sergei-grechanik/tupimage) (just put it somewhere
+under your `$PATH`).
+
 # Wez's Terminal
 
 <img alt="WezTerm Icon" src="https://raw.githubusercontent.com/wez/wezterm/main/assets/icon/terminal.png" align="left"> *A GPU-accelerated cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*
